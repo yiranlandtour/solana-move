@@ -1,0 +1,133 @@
+{
+  "name": "crosschain-dsl",
+  "displayName": "CrossChain DSL",
+  "description": "Language support for CrossChain DSL - Write once, deploy everywhere",
+  "version": "0.1.0",
+  "publisher": "crosschain-dev",
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets",
+    "Formatters",
+    "Linters"
+  ],
+  "keywords": [
+    "blockchain",
+    "solana",
+    "move",
+    "aptos",
+    "sui",
+    "smart-contracts",
+    "dsl"
+  ],
+  "activationEvents": [
+    "onLanguage:ccdsl"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "ccdsl",
+        "aliases": ["CrossChain DSL", "ccdsl"],
+        "extensions": [".ccdsl", ".crosschain"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "ccdsl",
+        "scopeName": "source.ccdsl",
+        "path": "./syntaxes/ccdsl.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "ccdsl",
+        "path": "./snippets/ccdsl.json"
+      }
+    ],
+    "configuration": {
+      "title": "CrossChain DSL",
+      "properties": {
+        "ccdsl.compiler.path": {
+          "type": "string",
+          "default": "ccdsl",
+          "description": "Path to the CrossChain DSL compiler"
+        },
+        "ccdsl.validation.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable/disable real-time validation"
+        },
+        "ccdsl.format.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable/disable auto-formatting"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "ccdsl.compile",
+        "title": "CrossChain DSL: Compile to All Platforms"
+      },
+      {
+        "command": "ccdsl.compileSolana",
+        "title": "CrossChain DSL: Compile to Solana"
+      },
+      {
+        "command": "ccdsl.compileAptos",
+        "title": "CrossChain DSL: Compile to Aptos"
+      },
+      {
+        "command": "ccdsl.compileSui",
+        "title": "CrossChain DSL: Compile to Sui"
+      },
+      {
+        "command": "ccdsl.validate",
+        "title": "CrossChain DSL: Validate Syntax"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "ccdsl.compile",
+        "key": "ctrl+shift+b",
+        "mac": "cmd+shift+b",
+        "when": "resourceExtname == .ccdsl"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "when": "resourceExtname == .ccdsl",
+          "command": "ccdsl.compile",
+          "group": "ccdsl"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.74.0",
+    "@types/node": "16.x",
+    "@typescript-eslint/eslint-plugin": "^5.45.0",
+    "@typescript-eslint/parser": "^5.45.0",
+    "eslint": "^8.28.0",
+    "typescript": "^4.9.3"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^8.0.2",
+    "vscode-languageserver": "^8.0.2",
+    "vscode-languageserver-textdocument": "^1.0.8"
+  }
+}

@@ -1,0 +1,432 @@
+// CrossChain DeFi: 借贷协议 (Lending Protocol)
+// 支持抵押、借贷、清算、利率模型等完整功能
+
+contract LendingProtocol {
+    state {
+        // 市场信息
+        markets: map<address, Market>;
+        supported_assets: vec<address>;
+        
+        // 用户账户
+        user_accounts: map<address, map<address, Account>>;  // user -> asset -> account
+        
+        // 利率模型参数
+        base_rate: u64;           // 基础利率 (年化 2%)
+        utilization_rate: u64;    // 利用率斜率
+        kink: u64;                // 拐点 (80%)
+        jump_multiplier: u64;     // 跳跃乘数
+        
+        // 清算参数
+        liquidation_threshold: u64;  // 清算阈值 (150%)
+        liquidation_penalty: u64;    // 清算罚金 (10%)
+        close_factor: u64;           // 单次清算比例 (50%)
+        
+        // 价格预言机
+        price_oracle: address;
+        
+        // 协议参数
+        protocol_reserve_factor: u64;  // 协议储备金比例 (10%)
+        protocol_reserves: map<address, u64>;
+        
+        // 管理
+        admin: address;
+        paused: bool;
+        
+        // 全局状态
+        total_borrows: map<address, u64>;
+        total_reserves: map<address, u64>;
+        borrow_index: map<address, u128>;
+        last_accrual_block: u64;
+    }
+    
+    struct Market {
+        asset: address;
+        is_listed: bool;
+        collateral_factor: u64;  // 抵押率 (e.g., 75%)
+        borrow_cap: u64;         // 借款上限
+        supply_cap: u64;         // 存款上限
+        total_supply: u64;       // 总存款
+        total_borrows: u64;      // 总借款
+        exchange_rate: u128;     // cToken 汇率
+        last_update_block: u64;
+    }
+    
+    struct Account {
+        supply_balance: u64;     // 存款余额 (cToken)
+        borrow_balance: u64;     // 借款余额
+        borrow_index: u128;      // 用户借款索引
+        entered_markets: vec<address>;  // 已进入的市场
+    }
+    
+    // 初始化协议
+    public fn initialize(oracle: address) {
+        require(!paused, "Already initialized");
+        
+        admin = msg_sender();
+        price_oracle = oracle;
+        
+        // 设置默认参数
+        base_rate = 20000000000000000;        // 2% 年化
+        utilization_rate = 40000000000000000;  // 4%
+        kink = 800000000000000000;            // 80%
+        jump_multiplier = 100000000000000000;  // 10%
+        
+        liquidation_threshold = 1500000000000000000;  // 150%
+        liquidation_penalty = 100000000000000000;     // 10%
+        close_factor = 500000000000000000;            // 50%
+        
+        protocol_reserve_factor = 100000000000000000;  // 10%
+        
+        last_accrual_block = current_block();
+        paused = false;
+        
+        emit ProtocolInitialized(admin, oracle);
+    }
+    
+    // 添加新市场
+    public fn add_market(
+        asset: address,
+        collateral_factor: u64,
+        borrow_cap: u64,
+        supply_cap: u64
+    ) {
+        require(msg_sender() == admin, "Only admin");
+        require(!markets[asset].is_listed, "Market already exists");
+        
+        let market = Market {
+            asset: asset,
+            is_listed: true,
+            collateral_factor: collateral_factor,
+            borrow_cap: borrow_cap,
+            supply_cap: supply_cap,
+            total_supply: 0,
+            total_borrows: 0,
+            exchange_rate: 1000000000000000000,  // 1:1 初始汇率
+            last_update_block: current_block()
+        };
+        
+        markets[asset] = market;
+        supported_assets.push(asset);
+        borrow_index[asset] = 1000000000000000000;
+        
+        emit MarketAdded(asset, collateral_factor);
+    }
+    
+    // 存款
+    public fn supply(asset: address, amount: u64) {
+        require(!paused, "Protocol paused");
+        require(markets[asset].is_listed, "Market not listed");
+        
+        // 更新利息
+        accrue_interest(asset);
+        
+        let market = markets[asset];
+        require(market.total_supply + amount <= market.supply_cap, "Supply cap exceeded");
+        
+        // 计算 cToken 数量
+        let exchange_rate = get_exchange_rate(asset);
+        let c_tokens = (amount * 1000000000000000000) / exchange_rate;
+        
+        // 更新用户账户
+        let account = user_accounts[msg_sender()][asset];
+        account.supply_balance = account.supply_balance + c_tokens;
+        user_accounts[msg_sender()][asset] = account;
+        
+        // 更新市场
+        markets[asset].total_supply = market.total_supply + amount;
+        
+        emit Supply(msg_sender(), asset, amount, c_tokens);
+    }
+    
+    // 取款
+    public fn withdraw(asset: address, amount: u64) {
+        require(!paused, "Protocol paused");
+        
+        accrue_interest(asset);
+        
+        let account = user_accounts[msg_sender()][asset];
+        let exchange_rate = get_exchange_rate(asset);
+        
+        // 计算需要的 cToken 数量
+        let c_tokens_needed = (amount * 1000000000000000000) / exchange_rate;
+        require(account.supply_balance >= c_tokens_needed, "Insufficient balance");
+        
+        // 检查取款后的抵押率
+        let liquidity = calculate_account_liquidity(msg_sender());
+        let withdrawal_value = get_asset_value(asset, amount);
+        require(liquidity >= withdrawal_value, "Insufficient collateral");
+        
+        // 更新账户
+        account.supply_balance = account.supply_balance - c_tokens_needed;
+        user_accounts[msg_sender()][asset] = account;
+        
+        // 更新市场
+        markets[asset].total_supply = markets[asset].total_supply - amount;
+        
+        emit Withdraw(msg_sender(), asset, amount, c_tokens_needed);
+    }
+    
+    // 借款
+    public fn borrow(asset: address, amount: u64) {
+        require(!paused, "Protocol paused");
+        require(markets[asset].is_listed, "Market not listed");
+        
+        accrue_interest(asset);
+        
+        let market = markets[asset];
+        require(market.total_borrows + amount <= market.borrow_cap, "Borrow cap exceeded");
+        
+        // 检查借款能力
+        let borrow_capacity = calculate_borrow_capacity(msg_sender());
+        let borrow_value = get_asset_value(asset, amount);
+        require(borrow_value <= borrow_capacity, "Insufficient collateral");
+        
+        // 更新账户
+        let account = user_accounts[msg_sender()][asset];
+        let new_borrow_balance = calculate_borrow_balance(msg_sender(), asset) + amount;
+        account.borrow_balance = new_borrow_balance;
+        account.borrow_index = borrow_index[asset];
+        user_accounts[msg_sender()][asset] = account;
+        
+        // 更新市场
+        markets[asset].total_borrows = market.total_borrows + amount;
+        total_borrows[asset] = total_borrows[asset] + amount;
+        
+        emit Borrow(msg_sender(), asset, amount, new_borrow_balance);
+    }
+    
+    // 还款
+    public fn repay(asset: address, amount: u64) {
+        require(!paused, "Protocol paused");
+        
+        accrue_interest(asset);
+        
+        let current_borrow = calculate_borrow_balance(msg_sender(), asset);
+        let repay_amount = min(amount, current_borrow);
+        
+        // 更新账户
+        let account = user_accounts[msg_sender()][asset];
+        account.borrow_balance = current_borrow - repay_amount;
+        account.borrow_index = borrow_index[asset];
+        user_accounts[msg_sender()][asset] = account;
+        
+        // 更新市场
+        markets[asset].total_borrows = markets[asset].total_borrows - repay_amount;
+        total_borrows[asset] = total_borrows[asset] - repay_amount;
+        
+        emit Repay(msg_sender(), asset, repay_amount, account.borrow_balance);
+    }
+    
+    // 清算
+    public fn liquidate(
+        borrower: address,
+        repay_asset: address,
+        repay_amount: u64,
+        collateral_asset: address
+    ) {
+        require(!paused, "Protocol paused");
+        require(msg_sender() != borrower, "Cannot self-liquidate");
+        
+        accrue_interest(repay_asset);
+        accrue_interest(collateral_asset);
+        
+        // 检查账户是否可清算
+        require(is_liquidatable(borrower), "Account not liquidatable");
+        
+        // 计算实际清算金额
+        let borrow_balance = calculate_borrow_balance(borrower, repay_asset);
+        let max_repay = (borrow_balance * close_factor) / 1000000000000000000;
+        let actual_repay = min(repay_amount, max_repay);
+        
+        // 计算获得的抵押品
+        let repay_value = get_asset_value(repay_asset, actual_repay);
+        let incentivized_value = repay_value + (repay_value * liquidation_penalty) / 1000000000000000000;
+        let collateral_amount = calculate_amount_from_value(collateral_asset, incentivized_value);
+        
+        // 更新借款人账户
+        let borrower_account = user_accounts[borrower][repay_asset];
+        borrower_account.borrow_balance = borrow_balance - actual_repay;
+        user_accounts[borrower][repay_asset] = borrower_account;
+        
+        // 转移抵押品给清算人
+        let collateral_account = user_accounts[borrower][collateral_asset];
+        let exchange_rate = get_exchange_rate(collateral_asset);
+        let c_tokens_seized = (collateral_amount * 1000000000000000000) / exchange_rate;
+        
+        require(collateral_account.supply_balance >= c_tokens_seized, "Insufficient collateral");
+        
+        collateral_account.supply_balance = collateral_account.supply_balance - c_tokens_seized;
+        user_accounts[borrower][collateral_asset] = collateral_account;
+        
+        let liquidator_account = user_accounts[msg_sender()][collateral_asset];
+        liquidator_account.supply_balance = liquidator_account.supply_balance + c_tokens_seized;
+        user_accounts[msg_sender()][collateral_asset] = liquidator_account;
+        
+        emit Liquidation(
+            msg_sender(),
+            borrower,
+            repay_asset,
+            actual_repay,
+            collateral_asset,
+            collateral_amount
+        );
+    }
+    
+    // 进入市场（用作抵押）
+    public fn enter_market(asset: address) {
+        require(markets[asset].is_listed, "Market not listed");
+        
+        let account = user_accounts[msg_sender()][asset];
+        
+        // 检查是否已进入
+        let already_entered = false;
+        for market in account.entered_markets {
+            if (market == asset) {
+                already_entered = true;
+                break;
+            }
+        }
+        
+        if (!already_entered) {
+            account.entered_markets.push(asset);
+            user_accounts[msg_sender()][asset] = account;
+            emit MarketEntered(msg_sender(), asset);
+        }
+    }
+    
+    // 退出市场（停止用作抵押）
+    public fn exit_market(asset: address) {
+        let account = user_accounts[msg_sender()][asset];
+        
+        // 检查退出后是否仍有足够抵押
+        let hypothetical_liquidity = calculate_hypothetical_liquidity(
+            msg_sender(),
+            asset,
+            account.supply_balance,
+            0
+        );
+        require(hypothetical_liquidity >= 0, "Insufficient collateral");
+        
+        // 从已进入市场列表中移除
+        let new_markets = vec<address>[];
+        for market in account.entered_markets {
+            if (market != asset) {
+                new_markets.push(market);
+            }
+        }
+        account.entered_markets = new_markets;
+        user_accounts[msg_sender()][asset] = account;
+        
+        emit MarketExited(msg_sender(), asset);
+    }
+    
+    // 更新利息
+    private fn accrue_interest(asset: address) {
+        let current_block_number = current_block();
+        let blocks_delta = current_block_number - last_accrual_block;
+        
+        if (blocks_delta == 0) {
+            return;
+        }
+        
+        let market = markets[asset];
+        let cash = market.total_supply - market.total_borrows;
+        let borrow_rate = calculate_borrow_rate(cash, market.total_borrows, total_reserves[asset]);
+        
+        // 计算利息
+        let interest_accumulated = (market.total_borrows * borrow_rate * blocks_delta) / 1000000000000000000;
+        let new_total_borrows = market.total_borrows + interest_accumulated;
+        let new_total_reserves = total_reserves[asset] + (interest_accumulated * protocol_reserve_factor) / 1000000000000000000;
+        
+        // 更新借款索引
+        let borrow_index_delta = (borrow_index[asset] * borrow_rate * blocks_delta) / 1000000000000000000;
+        borrow_index[asset] = borrow_index[asset] + borrow_index_delta;
+        
+        // 更新市场
+        markets[asset].total_borrows = new_total_borrows;
+        total_reserves[asset] = new_total_reserves;
+        last_accrual_block = current_block_number;
+    }
+    
+    // 计算借款利率
+    private fn calculate_borrow_rate(cash: u64, borrows: u64, reserves: u64) -> u64 {
+        let utilization = if (cash + borrows == 0) {
+            0
+        } else {
+            (borrows * 1000000000000000000) / (cash + borrows - reserves)
+        };
+        
+        if (utilization <= kink) {
+            return base_rate + (utilization * utilization_rate) / 1000000000000000000;
+        } else {
+            let normal_rate = base_rate + (kink * utilization_rate) / 1000000000000000000;
+            let excess_util = utilization - kink;
+            return normal_rate + (excess_util * jump_multiplier) / 1000000000000000000;
+        }
+    }
+    
+    // 辅助函数
+    private fn get_exchange_rate(asset: address) -> u128 {
+        let market = markets[asset];
+        if (market.total_supply == 0) {
+            return 1000000000000000000;
+        }
+        let cash = market.total_supply - market.total_borrows - total_reserves[asset];
+        return ((cash + market.total_borrows) * 1000000000000000000) / market.total_supply;
+    }
+    
+    private fn calculate_borrow_balance(user: address, asset: address) -> u64 {
+        let account = user_accounts[user][asset];
+        if (account.borrow_balance == 0) {
+            return 0;
+        }
+        return (account.borrow_balance * borrow_index[asset]) / account.borrow_index;
+    }
+    
+    private fn calculate_account_liquidity(user: address) -> u64 {
+        let collateral_value = 0;
+        let borrow_value = 0;
+        
+        for asset in supported_assets {
+            let account = user_accounts[user][asset];
+            
+            // 计算抵押价值
+            if (is_in_market(user, asset)) {
+                let supply_value = get_asset_value(asset, account.supply_balance);
+                let adjusted_value = (supply_value * markets[asset].collateral_factor) / 1000000000000000000;
+                collateral_value = collateral_value + adjusted_value;
+            }
+            
+            // 计算借款价值
+            let borrow_balance = calculate_borrow_balance(user, asset);
+            borrow_value = borrow_value + get_asset_value(asset, borrow_balance);
+        }
+        
+        if (collateral_value >= borrow_value) {
+            return collateral_value - borrow_value;
+        } else {
+            return 0;
+        }
+    }
+    
+    private fn is_liquidatable(user: address) -> bool {
+        let collateral_value = 0;
+        let borrow_value = 0;
+        
+        for asset in supported_assets {
+            let account = user_accounts[user][asset];
+            
+            if (is_in_market(user, asset)) {
+                let supply_value = get_asset_value(asset, account.supply_balance);
+                collateral_value = collateral_value + supply_value;
+            }
+            
+            let borrow_balance = calculate_borrow_balance(user, asset);
+            borrow_value = borrow_value + get_asset_value(asset, borrow_balance);
+        }
+        
+        return (borrow_value * liquidation_threshold) / 1000000000000000000 > collateral_value;
+    }
+    
+    // 其他辅助函数省略...
+}

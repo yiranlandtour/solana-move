@@ -1,0 +1,133 @@
+# Rust / Cargo
+target/
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# DSL Compiler build artifacts
+dsl-compiler/target/
+lsp-server/target/
+*.ccdsl.cache
+
+# Generated code (keep examples)
+generated/*
+!generated/.gitkeep
+output/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# VS Code Extension
+vscode-extension/node_modules/
+vscode-extension/out/
+vscode-extension/*.vsix
+vscode-extension/.vscode-test/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Solana
+.anchor/
+.cache/
+test-ledger/
+deploy/
+*.so
+*.keypair
+
+# Move / Aptos / Sui
+move-impl/*/build/
+move-impl/*/.aptos/
+move-impl/*/.movement/
+*.mv
+*.move.lock
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+
+# Testing
+coverage/
+*.lcov
+.nyc_output/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# OS Files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Python (for AI components)
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.Python
+venv/
+env/
+.venv/
+
+# AI Model files
+models/
+*.onnx
+*.pt
+*.pth
+*.h5
+*.pkl
+*.joblib
+
+# Documentation build
+docs/_build/
+docs/.doctrees/
+
+# Backup files
+*.backup
+*.bak
+*.old
+
+# Security - Never commit these
+*.pem
+*.key
+*.cert
+*.crt
+secrets/
+credentials/
+
+# Test output
+test-results/
+junit.xml
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Cache
+.cache/
+.parcel-cache/
+.turbo/
+
+# Distribution
+dist/
+*.tar.gz
+*.zip

@@ -1,0 +1,490 @@
+// CrossChain DeFi: Automated Market Maker (AMM) DEX
+// 支持流动性提供、代币交换、滑点保护等完整功能
+
+contract AmmDex {
+    // 状态变量
+    state {
+        // 流动性池
+        pools: map<address, Pool>;
+        pool_count: u64;
+        
+        // LP Token 信息
+        lp_tokens: map<address, map<address, u64>>;  // pool -> user -> amount
+        total_lp_supply: map<address, u64>;           // pool -> total supply
+        
+        // 手续费设置
+        fee_numerator: u64;    // 默认 3 (0.3%)
+        fee_denominator: u64;  // 默认 1000
+        protocol_fee_share: u64;  // 协议手续费份额 (默认 1/6)
+        
+        // 协议收益
+        protocol_fees: map<address, u64>;
+        
+        // 管理员
+        admin: address;
+        paused: bool;
+        
+        // 价格预言机集成
+        price_oracle: address;
+        twap_window: u64;  // 时间加权平均价格窗口
+    }
+    
+    // 流动性池结构
+    struct Pool {
+        token_a: address;
+        token_b: address;
+        reserve_a: u64;
+        reserve_b: u64;
+        k_last: u128;  // reserve_a * reserve_b 的最后记录值
+        block_timestamp_last: u64;
+        price_cumulative_a: u128;
+        price_cumulative_b: u128;
+        locked: bool;  // 重入锁
+    }
+    
+    // 初始化 DEX
+    public fn initialize(
+        initial_fee_numerator: u64,
+        initial_fee_denominator: u64,
+        oracle_address: address
+    ) {
+        require(!paused, "Already initialized");
+        
+        admin = msg_sender();
+        fee_numerator = initial_fee_numerator;
+        fee_denominator = initial_fee_denominator;
+        protocol_fee_share = 6;  // 1/6 的手续费归协议
+        price_oracle = oracle_address;
+        twap_window = 3600;  // 1小时 TWAP
+        pool_count = 0;
+        paused = false;
+        
+        emit DexInitialized(admin, initial_fee_numerator, initial_fee_denominator);
+    }
+    
+    // 创建流动性池
+    public fn create_pool(
+        token_a: address,
+        token_b: address,
+        initial_amount_a: u64,
+        initial_amount_b: u64
+    ) -> address {
+        require(!paused, "DEX is paused");
+        require(token_a != token_b, "Identical tokens");
+        require(initial_amount_a > 0 && initial_amount_b > 0, "Invalid amounts");
+        
+        // 生成池地址（简化版本，实际应该用更复杂的派生）
+        let pool_address = derive_pool_address(token_a, token_b);
+        
+        // 确保池不存在
+        require(!pool_exists(pool_address), "Pool already exists");
+        
+        // 创建新池
+        let pool = Pool {
+            token_a: token_a,
+            token_b: token_b,
+            reserve_a: initial_amount_a,
+            reserve_b: initial_amount_b,
+            k_last: initial_amount_a * initial_amount_b,
+            block_timestamp_last: current_timestamp(),
+            price_cumulative_a: 0,
+            price_cumulative_b: 0,
+            locked: false
+        };
+        
+        pools[pool_address] = pool;
+        pool_count = pool_count + 1;
+        
+        // 铸造初始 LP tokens
+        let initial_liquidity = sqrt(initial_amount_a * initial_amount_b);
+        lp_tokens[pool_address][msg_sender()] = initial_liquidity;
+        total_lp_supply[pool_address] = initial_liquidity;
+        
+        emit PoolCreated(pool_address, token_a, token_b, initial_amount_a, initial_amount_b);
+        
+        return pool_address;
+    }
+    
+    // 添加流动性
+    public fn add_liquidity(
+        pool_address: address,
+        amount_a: u64,
+        amount_b: u64,
+        min_lp_tokens: u64
+    ) -> u64 {
+        require(!paused, "DEX is paused");
+        let pool = pools[pool_address];
+        require(!pool.locked, "Pool is locked");
+        
+        // 设置重入锁
+        pools[pool_address].locked = true;
+        
+        // 更新价格累积器
+        update_price_oracle(pool_address);
+        
+        // 计算最优添加量
+        let (optimal_amount_a, optimal_amount_b) = calculate_optimal_amounts(
+            pool.reserve_a,
+            pool.reserve_b,
+            amount_a,
+            amount_b
+        );
+        
+        // 计算 LP tokens
+        let total_supply = total_lp_supply[pool_address];
+        let lp_tokens_minted = if (total_supply == 0) {
+            sqrt(optimal_amount_a * optimal_amount_b)
+        } else {
+            min(
+                (optimal_amount_a * total_supply) / pool.reserve_a,
+                (optimal_amount_b * total_supply) / pool.reserve_b
+            )
+        };
+        
+        require(lp_tokens_minted >= min_lp_tokens, "Insufficient LP tokens");
+        
+        // 更新储备
+        pools[pool_address].reserve_a = pool.reserve_a + optimal_amount_a;
+        pools[pool_address].reserve_b = pool.reserve_b + optimal_amount_b;
+        
+        // 铸造 LP tokens
+        lp_tokens[pool_address][msg_sender()] = 
+            lp_tokens[pool_address][msg_sender()] + lp_tokens_minted;
+        total_lp_supply[pool_address] = total_supply + lp_tokens_minted;
+        
+        // 释放锁
+        pools[pool_address].locked = false;
+        
+        emit LiquidityAdded(
+            pool_address,
+            msg_sender(),
+            optimal_amount_a,
+            optimal_amount_b,
+            lp_tokens_minted
+        );
+        
+        return lp_tokens_minted;
+    }
+    
+    // 移除流动性
+    public fn remove_liquidity(
+        pool_address: address,
+        lp_amount: u64,
+        min_amount_a: u64,
+        min_amount_b: u64
+    ) -> (u64, u64) {
+        require(!paused, "DEX is paused");
+        let pool = pools[pool_address];
+        require(!pool.locked, "Pool is locked");
+        
+        pools[pool_address].locked = true;
+        
+        let user_balance = lp_tokens[pool_address][msg_sender()];
+        require(user_balance >= lp_amount, "Insufficient LP tokens");
+        
+        let total_supply = total_lp_supply[pool_address];
+        
+        // 计算返还的代币数量
+        let amount_a = (lp_amount * pool.reserve_a) / total_supply;
+        let amount_b = (lp_amount * pool.reserve_b) / total_supply;
+        
+        require(amount_a >= min_amount_a, "Insufficient token A");
+        require(amount_b >= min_amount_b, "Insufficient token B");
+        
+        // 销毁 LP tokens
+        lp_tokens[pool_address][msg_sender()] = user_balance - lp_amount;
+        total_lp_supply[pool_address] = total_supply - lp_amount;
+        
+        // 更新储备
+        pools[pool_address].reserve_a = pool.reserve_a - amount_a;
+        pools[pool_address].reserve_b = pool.reserve_b - amount_b;
+        
+        pools[pool_address].locked = false;
+        
+        emit LiquidityRemoved(
+            pool_address,
+            msg_sender(),
+            amount_a,
+            amount_b,
+            lp_amount
+        );
+        
+        return (amount_a, amount_b);
+    }
+    
+    // 交换代币 (Token A -> Token B)
+    public fn swap(
+        pool_address: address,
+        amount_in: u64,
+        min_amount_out: u64,
+        token_in: address
+    ) -> u64 {
+        require(!paused, "DEX is paused");
+        let pool = pools[pool_address];
+        require(!pool.locked, "Pool is locked");
+        
+        pools[pool_address].locked = true;
+        
+        // 更新价格预言机
+        update_price_oracle(pool_address);
+        
+        // 确定输入输出代币
+        let (reserve_in, reserve_out, is_a_to_b) = if (token_in == pool.token_a) {
+            (pool.reserve_a, pool.reserve_b, true)
+        } else if (token_in == pool.token_b) {
+            (pool.reserve_b, pool.reserve_a, false)
+        } else {
+            revert("Invalid token");
+        };
+        
+        // 计算输出数量（扣除手续费）
+        let amount_in_with_fee = amount_in * (fee_denominator - fee_numerator);
+        let numerator = amount_in_with_fee * reserve_out;
+        let denominator = (reserve_in * fee_denominator) + amount_in_with_fee;
+        let amount_out = numerator / denominator;
+        
+        require(amount_out >= min_amount_out, "Insufficient output amount");
+        require(amount_out < reserve_out, "Insufficient liquidity");
+        
+        // 计算协议手续费
+        let fee_amount = (amount_in * fee_numerator) / fee_denominator;
+        let protocol_fee = fee_amount / protocol_fee_share;
+        protocol_fees[token_in] = protocol_fees[token_in] + protocol_fee;
+        
+        // 更新储备
+        if (is_a_to_b) {
+            pools[pool_address].reserve_a = pool.reserve_a + amount_in;
+            pools[pool_address].reserve_b = pool.reserve_b - amount_out;
+        } else {
+            pools[pool_address].reserve_b = pool.reserve_b + amount_in;
+            pools[pool_address].reserve_a = pool.reserve_a - amount_out;
+        }
+        
+        // 更新 K 值
+        pools[pool_address].k_last = 
+            pools[pool_address].reserve_a * pools[pool_address].reserve_b;
+        
+        pools[pool_address].locked = false;
+        
+        emit Swap(
+            pool_address,
+            msg_sender(),
+            token_in,
+            amount_in,
+            amount_out
+        );
+        
+        return amount_out;
+    }
+    
+    // 闪电贷功能
+    public fn flash_loan(
+        pool_address: address,
+        amount_a: u64,
+        amount_b: u64,
+        callback_data: vec<u8>
+    ) {
+        require(!paused, "DEX is paused");
+        let pool = pools[pool_address];
+        require(!pool.locked, "Pool is locked");
+        
+        pools[pool_address].locked = true;
+        
+        let reserve_a_before = pool.reserve_a;
+        let reserve_b_before = pool.reserve_b;
+        
+        require(amount_a <= reserve_a_before, "Insufficient token A");
+        require(amount_b <= reserve_b_before, "Insufficient token B");
+        
+        // 临时减少储备
+        if (amount_a > 0) {
+            pools[pool_address].reserve_a = reserve_a_before - amount_a;
+        }
+        if (amount_b > 0) {
+            pools[pool_address].reserve_b = reserve_b_before - amount_b;
+        }
+        
+        // 调用借款人的回调函数
+        // call_flash_loan_receiver(msg_sender(), amount_a, amount_b, callback_data);
+        
+        // 计算手续费 (0.05% 闪电贷手续费)
+        let fee_a = if (amount_a > 0) { (amount_a * 5) / 10000 + 1 } else { 0 };
+        let fee_b = if (amount_b > 0) { (amount_b * 5) / 10000 + 1 } else { 0 };
+        
+        // 验证还款
+        let pool_after = pools[pool_address];
+        require(
+            pool_after.reserve_a >= reserve_a_before + fee_a,
+            "Insufficient repayment A"
+        );
+        require(
+            pool_after.reserve_b >= reserve_b_before + fee_b,
+            "Insufficient repayment B"
+        );
+        
+        pools[pool_address].locked = false;
+        
+        emit FlashLoan(
+            pool_address,
+            msg_sender(),
+            amount_a,
+            amount_b,
+            fee_a,
+            fee_b
+        );
+    }
+    
+    // 价格预言机更新
+    private fn update_price_oracle(pool_address: address) {
+        let pool = pools[pool_address];
+        let current_time = current_timestamp();
+        let time_elapsed = current_time - pool.block_timestamp_last;
+        
+        if (time_elapsed > 0 && pool.reserve_a > 0 && pool.reserve_b > 0) {
+            // 更新累积价格
+            let price_a = (pool.reserve_b * (2^112)) / pool.reserve_a;
+            let price_b = (pool.reserve_a * (2^112)) / pool.reserve_b;
+            
+            pools[pool_address].price_cumulative_a = 
+                pool.price_cumulative_a + (price_a * time_elapsed);
+            pools[pool_address].price_cumulative_b = 
+                pool.price_cumulative_b + (price_b * time_elapsed);
+            
+            pools[pool_address].block_timestamp_last = current_time;
+        }
+    }
+    
+    // 获取时间加权平均价格 (TWAP)
+    public fn get_twap(
+        pool_address: address,
+        token: address,
+        period: u64
+    ) -> u128 {
+        let pool = pools[pool_address];
+        require(period > 0, "Invalid period");
+        
+        // 获取当前累积价格
+        update_price_oracle(pool_address);
+        
+        let current_cumulative = if (token == pool.token_a) {
+            pool.price_cumulative_a
+        } else {
+            pool.price_cumulative_b
+        };
+        
+        // 计算 TWAP (简化版本)
+        let twap = current_cumulative / period;
+        
+        return twap;
+    }
+    
+    // 管理功能
+    public fn set_fees(new_numerator: u64, new_denominator: u64) {
+        require(msg_sender() == admin, "Only admin");
+        require(new_numerator <= new_denominator, "Invalid fee");
+        require(new_numerator <= 100, "Fee too high"); // 最高 10%
+        
+        fee_numerator = new_numerator;
+        fee_denominator = new_denominator;
+        
+        emit FeesUpdated(new_numerator, new_denominator);
+    }
+    
+    public fn collect_protocol_fees(token: address) -> u64 {
+        require(msg_sender() == admin, "Only admin");
+        
+        let amount = protocol_fees[token];
+        protocol_fees[token] = 0;
+        
+        emit ProtocolFeesCollected(token, amount);
+        
+        return amount;
+    }
+    
+    public fn pause() {
+        require(msg_sender() == admin, "Only admin");
+        paused = true;
+        emit Paused();
+    }
+    
+    public fn unpause() {
+        require(msg_sender() == admin, "Only admin");
+        paused = false;
+        emit Unpaused();
+    }
+    
+    // 查询功能
+    public fn get_pool_info(pool_address: address) -> Pool {
+        return pools[pool_address];
+    }
+    
+    public fn get_lp_balance(pool_address: address, user: address) -> u64 {
+        return lp_tokens[pool_address][user];
+    }
+    
+    public fn calculate_swap_output(
+        pool_address: address,
+        amount_in: u64,
+        token_in: address
+    ) -> u64 {
+        let pool = pools[pool_address];
+        
+        let (reserve_in, reserve_out) = if (token_in == pool.token_a) {
+            (pool.reserve_a, pool.reserve_b)
+        } else {
+            (pool.reserve_b, pool.reserve_a)
+        };
+        
+        let amount_in_with_fee = amount_in * (fee_denominator - fee_numerator);
+        let numerator = amount_in_with_fee * reserve_out;
+        let denominator = (reserve_in * fee_denominator) + amount_in_with_fee;
+        
+        return numerator / denominator;
+    }
+    
+    // 辅助函数
+    private fn sqrt(x: u64) -> u64 {
+        if (x == 0) { return 0; }
+        let z = (x + 1) / 2;
+        let y = x;
+        while (z < y) {
+            y = z;
+            z = (x / z + z) / 2;
+        }
+        return y;
+    }
+    
+    private fn min(a: u64, b: u64) -> u64 {
+        if (a < b) { return a; } else { return b; }
+    }
+    
+    private fn calculate_optimal_amounts(
+        reserve_a: u64,
+        reserve_b: u64,
+        amount_a: u64,
+        amount_b: u64
+    ) -> (u64, u64) {
+        let optimal_b = (amount_a * reserve_b) / reserve_a;
+        if (optimal_b <= amount_b) {
+            return (amount_a, optimal_b);
+        } else {
+            let optimal_a = (amount_b * reserve_a) / reserve_b;
+            return (optimal_a, amount_b);
+        }
+    }
+    
+    private fn derive_pool_address(token_a: address, token_b: address) -> address {
+        // 简化的地址派生（实际应该用哈希）
+        return token_a; // 临时返回
+    }
+    
+    private fn pool_exists(pool_address: address) -> bool {
+        // 检查池是否存在
+        return pools[pool_address].reserve_a > 0;
+    }
+    
+    private fn current_timestamp() -> u64 {
+        // 获取当前时间戳
+        return 1234567890; // 临时返回
+    }
+}

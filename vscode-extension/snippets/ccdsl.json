@@ -1,0 +1,132 @@
+{
+  "Contract": {
+    "prefix": "contract",
+    "body": [
+      "contract ${1:ContractName} {",
+      "\tstate {",
+      "\t\t${2:// State variables}",
+      "\t}",
+      "\t",
+      "\tpublic fn ${3:initialize}(${4:params}) {",
+      "\t\t${5:// Initialization logic}",
+      "\t}",
+      "\t",
+      "\t$0",
+      "}"
+    ],
+    "description": "Create a new contract"
+  },
+  "Function": {
+    "prefix": "fn",
+    "body": [
+      "${1:public} fn ${2:functionName}(${3:params}) ${4:-> returnType} {",
+      "\t${5:// Function body}",
+      "\t$0",
+      "}"
+    ],
+    "description": "Create a new function"
+  },
+  "State Variable": {
+    "prefix": "state",
+    "body": [
+      "state {",
+      "\t${1:variableName}: ${2:type};",
+      "\t$0",
+      "}"
+    ],
+    "description": "Define state variables"
+  },
+  "Transfer Function": {
+    "prefix": "transfer",
+    "body": [
+      "public fn transfer(to: address, amount: u64) {",
+      "\tlet from = msg_sender();",
+      "\trequire(balances[from] >= amount, \"Insufficient balance\");",
+      "\t",
+      "\tbalances[from] = balances[from] - amount;",
+      "\tbalances[to] = balances[to] + amount;",
+      "\t",
+      "\temit Transfer(from, to, amount);",
+      "}"
+    ],
+    "description": "Standard transfer function"
+  },
+  "Require Statement": {
+    "prefix": "require",
+    "body": [
+      "require(${1:condition}, \"${2:Error message}\");"
+    ],
+    "description": "Add a require statement"
+  },
+  "Emit Event": {
+    "prefix": "emit",
+    "body": [
+      "emit ${1:EventName}(${2:args});"
+    ],
+    "description": "Emit an event"
+  },
+  "If Statement": {
+    "prefix": "if",
+    "body": [
+      "if (${1:condition}) {",
+      "\t${2:// True branch}",
+      "} else {",
+      "\t${3:// False branch}",
+      "}"
+    ],
+    "description": "If-else statement"
+  },
+  "Map Declaration": {
+    "prefix": "map",
+    "body": [
+      "${1:mapName}: map<${2:keyType}, ${3:valueType}>;"
+    ],
+    "description": "Declare a map"
+  },
+  "Initialize Function": {
+    "prefix": "init",
+    "body": [
+      "public fn initialize(",
+      "\t${1:param1}: ${2:type1},",
+      "\t${3:param2}: ${4:type2}",
+      ") {",
+      "\trequire(!initialized, \"Already initialized\");",
+      "\t",
+      "\t${5:// Initialization logic}",
+      "\t",
+      "\tinitialized = true;",
+      "\temit Initialized(msg_sender());",
+      "}"
+    ],
+    "description": "Standard initialization function"
+  },
+  "Mint Function": {
+    "prefix": "mint",
+    "body": [
+      "public fn mint(to: address, amount: u64) {",
+      "\trequire(msg_sender() == owner, \"Only owner can mint\");",
+      "\t",
+      "\ttotal_supply = total_supply + amount;",
+      "\tbalances[to] = balances[to] + amount;",
+      "\t",
+      "\temit Mint(to, amount);",
+      "}"
+    ],
+    "description": "Token minting function"
+  },
+  "Burn Function": {
+    "prefix": "burn",
+    "body": [
+      "public fn burn(amount: u64) {",
+      "\tlet from = msg_sender();",
+      "\trequire(balances[from] >= amount, \"Insufficient balance\");",
+      "\t",
+      "\tbalances[from] = balances[from] - amount;",
+      "\ttotal_supply = total_supply - amount;",
+      "\t",
+      "\temit Burn(from, amount);",
+      "}"
+    ],
+    "description": "Token burning function"
+  }
+}

@@ -1,0 +1,111 @@
+// CrossChain DSL - 统一的智能合约定义
+// 这个文件会被编译成 Solana (Rust) 和 Move 代码
+
+contract Token {
+    // 状态变量定义
+    state {
+        total_supply: u64;
+        owner: address;
+        balances: map<address, u64>;
+        allowances: map<address, map<address, u64>>;
+        decimals: u8;
+        name: string;
+        symbol: string;
+    }
+    
+    // 初始化函数
+    public fn initialize(
+        initial_supply: u64,
+        token_name: string,
+        token_symbol: string,
+        token_decimals: u8
+    ) {
+        // 设置代币基本信息
+        total_supply = initial_supply;
+        name = token_name;
+        symbol = token_symbol;
+        decimals = token_decimals;
+        
+        // 将初始供应量分配给部署者
+        owner = msg_sender();
+        balances[owner] = initial_supply;
+        
+        // 发出初始化事件
+        emit TokenInitialized(owner, initial_supply);
+    }
+    
+    // 转账函数
+    public fn transfer(to: address, amount: u64) {
+        let from = msg_sender();
+        
+        // 检查余额
+        require(balances[from] >= amount, "Insufficient balance");
+        
+        // 执行转账
+        balances[from] = balances[from] - amount;
+        balances[to] = balances[to] + amount;
+        
+        // 发出转账事件
+        emit Transfer(from, to, amount);
+    }
+    
+    // 授权函数
+    public fn approve(spender: address, amount: u64) {
+        let owner = msg_sender();
+        allowances[owner][spender] = amount;
+        
+        emit Approval(owner, spender, amount);
+    }
+    
+    // 委托转账
+    public fn transfer_from(from: address, to: address, amount: u64) {
+        let spender = msg_sender();
+        
+        // 检查授权额度
+        require(allowances[from][spender] >= amount, "Insufficient allowance");
+        require(balances[from] >= amount, "Insufficient balance");
+        
+        // 更新授权额度
+        allowances[from][spender] = allowances[from][spender] - amount;
+        
+        // 执行转账
+        balances[from] = balances[from] - amount;
+        balances[to] = balances[to] + amount;
+        
+        emit Transfer(from, to, amount);
+    }
+    
+    // 铸造新代币（仅 owner）
+    public fn mint(to: address, amount: u64) {
+        require(msg_sender() == owner, "Only owner can mint");
+        
+        total_supply = total_supply + amount;
+        balances[to] = balances[to] + amount;
+        
+        emit Mint(to, amount);
+    }
+    
+    // 销毁代币
+    public fn burn(amount: u64) {
+        let from = msg_sender();
+        require(balances[from] >= amount, "Insufficient balance");
+        
+        balances[from] = balances[from] - amount;
+        total_supply = total_supply - amount;
+        
+        emit Burn(from, amount);
+    }
+    
+    // 查询函数
+    public fn balance_of(account: address) -> u64 {
+        return balances[account];
+    }
+    
+    public fn allowance(owner: address, spender: address) -> u64 {
+        return allowances[owner][spender];
+    }
+    
+    public fn get_total_supply() -> u64 {
+        return total_supply;
+    }
+}

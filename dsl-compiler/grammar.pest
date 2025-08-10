@@ -1,0 +1,92 @@
+// CrossChain DSL Grammar
+
+WHITESPACE = _{ " " | "\t" | "\n" | "\r" }
+COMMENT = _{ "//" ~ (!"\n" ~ ANY)* }
+
+// Program structure
+program = { SOI ~ contract_def ~ EOI }
+
+contract_def = { 
+    "contract" ~ identifier ~ "{" ~ 
+    state_section? ~ 
+    function_section? ~ 
+    "}" 
+}
+
+// State section
+state_section = { "state" ~ "{" ~ (state_var ~ ";")* ~ "}" }
+state_var = { identifier ~ ":" ~ type_spec }
+
+// Function section  
+function_section = { (function_def)+ }
+function_def = {
+    visibility? ~ "fn" ~ identifier ~ 
+    "(" ~ param_list? ~ ")" ~ 
+    ("->" ~ type_spec)? ~ 
+    block
+}
+
+visibility = { "public" | "private" }
+param_list = { param ~ ("," ~ param)* }
+param = { identifier ~ ":" ~ type_spec }
+
+// Types
+type_spec = {
+    "u8" | "u64" | "u128" | "bool" | 
+    "address" | "string" |
+    "map" ~ "<" ~ type_spec ~ "," ~ type_spec ~ ">" |
+    "vec" ~ "<" ~ type_spec ~ ">"
+}
+
+// Statements and expressions
+block = { "{" ~ statement* ~ "}" }
+statement = {
+    let_stmt | 
+    assign_stmt |
+    if_stmt |
+    require_stmt |
+    emit_stmt |
+    return_stmt |
+    expr_stmt
+}
+
+let_stmt = { "let" ~ identifier ~ "=" ~ expression ~ ";" }
+assign_stmt = { lvalue ~ "=" ~ expression ~ ";" }
+if_stmt = { "if" ~ expression ~ block ~ ("else" ~ block)? }
+require_stmt = { "require" ~ "(" ~ expression ~ ("," ~ string_lit)? ~ ")" ~ ";" }
+emit_stmt = { "emit" ~ identifier ~ "(" ~ arg_list? ~ ")" ~ ";" }
+return_stmt = { "return" ~ expression? ~ ";" }
+expr_stmt = { expression ~ ";" }
+
+lvalue = { 
+    identifier ~ ("[" ~ expression ~ "]")* |
+    identifier ~ "." ~ identifier
+}
+
+expression = { logical_or }
+logical_or = { logical_and ~ ("||" ~ logical_and)* }
+logical_and = { equality ~ ("&&" ~ equality)* }
+equality = { comparison ~ (("==" | "!=") ~ comparison)* }
+comparison = { additive ~ (("<" | ">" | "<=" | ">=") ~ additive)* }
+additive = { multiplicative ~ (("+" | "-") ~ multiplicative)* }
+multiplicative = { unary ~ (("*" | "/" | "%") ~ unary)* }
+unary = { ("!" | "-")? ~ primary }
+
+primary = {
+    number_lit |
+    bool_lit |
+    string_lit |
+    identifier ~ "(" ~ arg_list? ~ ")" | // function call
+    identifier ~ "[" ~ expression ~ "]" | // indexing
+    identifier ~ "." ~ identifier | // field access
+    identifier |
+    "(" ~ expression ~ ")"
+}
+
+arg_list = { expression ~ ("," ~ expression)* }
+
+// Literals and identifiers
+identifier = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+number_lit = @{ ASCII_DIGIT+ }
+bool_lit = { "true" | "false" }
+string_lit = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
