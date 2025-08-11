@@ -1,0 +1,33 @@
+[package]
+name = "formal-verification"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Z3 Theorem Prover
+z3 = "0.12"
+
+# SMT-LIB2 support
+smt2 = "0.3"
+
+# AST from main compiler
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Symbolic execution
+symbolic = "0.2"
+
+# Property-based testing
+proptest = "1.4"
+
+# Logging
+log = "0.4"
+env_logger = "0.10"
+
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+
+[dev-dependencies]
+criterion = "0.5"
+pretty_assertions = "1.4"
