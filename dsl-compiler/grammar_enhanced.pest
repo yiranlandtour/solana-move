@@ -1,0 +1,323 @@
+// Enhanced CrossChain DSL Grammar with comprehensive language features
+
+WHITESPACE = _{ " " | "\t" | "\n" | "\r" }
+COMMENT = _{ 
+    "//" ~ (!"\n" ~ ANY)* |
+    "/*" ~ (!"*/" ~ ANY)* ~ "*/"
+}
+
+// ==================== Program Structure ====================
+program = { SOI ~ (import_stmt)* ~ (type_def | contract_def | interface_def)* ~ EOI }
+
+// ==================== Imports ====================
+import_stmt = { "import" ~ (import_all | import_items) ~ "from" ~ string_lit ~ ";" }
+import_all = { "*" }
+import_items = { "{" ~ identifier ~ ("," ~ identifier)* ~ "}" }
+
+// ==================== Type Definitions ====================
+type_def = { "type" ~ identifier ~ "=" ~ type_spec ~ ";" }
+
+// ==================== Interface Definition ====================
+interface_def = {
+    "interface" ~ identifier ~ "{" ~
+    (function_signature ~ ";")* ~
+    "}"
+}
+
+function_signature = {
+    visibility? ~ "fn" ~ identifier ~
+    "(" ~ param_list? ~ ")" ~
+    ("->" ~ type_spec)?
+}
+
+// ==================== Contract Definition ====================
+contract_def = { 
+    "contract" ~ identifier ~ 
+    ("implements" ~ identifier ~ ("," ~ identifier)*)? ~ "{" ~ 
+    (
+        state_section | 
+        struct_def | 
+        event_def | 
+        modifier_def |
+        constant_def |
+        function_def
+    )* ~ 
+    "}" 
+}
+
+// ==================== State Section ====================
+state_section = { "state" ~ "{" ~ (state_var_decl)* ~ "}" }
+state_var_decl = { 
+    visibility? ~ mutability? ~ identifier ~ ":" ~ type_spec ~ 
+    ("=" ~ expression)? ~ ";"
+}
+
+mutability = { "mut" | "const" }
+
+// ==================== Struct Definition ====================
+struct_def = {
+    "struct" ~ identifier ~ "{" ~
+    (struct_field ~ ";")* ~
+    "}"
+}
+
+struct_field = { visibility? ~ identifier ~ ":" ~ type_spec }
+
+// ==================== Event Definition ====================
+event_def = {
+    "event" ~ identifier ~ "(" ~
+    event_param_list? ~
+    ")" ~ ";"
+}
+
+event_param_list = { event_param ~ ("," ~ event_param)* }
+event_param = { identifier ~ ":" ~ type_spec ~ ("indexed")? }
+
+// ==================== Modifier Definition ====================
+modifier_def = {
+    "modifier" ~ identifier ~ "(" ~ param_list? ~ ")" ~ block
+}
+
+// ==================== Constant Definition ====================
+constant_def = {
+    "const" ~ identifier ~ ":" ~ type_spec ~ "=" ~ expression ~ ";"
+}
+
+// ==================== Function Definition ====================
+function_def = {
+    visibility? ~ function_qualifier* ~ "fn" ~ identifier ~ 
+    "(" ~ param_list? ~ ")" ~ 
+    ("->" ~ type_spec)? ~ 
+    ("requires" ~ expression)? ~
+    ("ensures" ~ expression)? ~
+    block
+}
+
+visibility = { "public" | "private" | "internal" | "external" }
+function_qualifier = { "payable" | "view" | "pure" | "override" | "virtual" }
+
+param_list = { param ~ ("," ~ param)* }
+param = { mutability? ~ identifier ~ ":" ~ type_spec ~ ("=" ~ expression)? }
+
+// ==================== Type System ====================
+type_spec = {
+    primitive_type |
+    map_type |
+    vec_type |
+    array_type |
+    tuple_type |
+    option_type |
+    result_type |
+    struct_type |
+    reference_type
+}
+
+primitive_type = {
+    "u8" | "u16" | "u32" | "u64" | "u128" | "u256" |
+    "i8" | "i16" | "i32" | "i64" | "i128" |
+    "bool" | "address" | "string" | "bytes"
+}
+
+map_type = { "map" ~ "<" ~ type_spec ~ "," ~ type_spec ~ ">" }
+vec_type = { "vec" ~ "<" ~ type_spec ~ ">" }
+array_type = { "[" ~ type_spec ~ ";" ~ number_lit ~ "]" }
+tuple_type = { "(" ~ (type_spec ~ ("," ~ type_spec)*)? ~ ")" }
+option_type = { "Option" ~ "<" ~ type_spec ~ ">" }
+result_type = { "Result" ~ "<" ~ type_spec ~ "," ~ type_spec ~ ">" }
+struct_type = { identifier }
+reference_type = { "&" ~ mutability? ~ type_spec }
+
+// ==================== Statements ====================
+block = { "{" ~ statement* ~ "}" }
+
+statement = {
+    let_stmt |
+    assign_stmt |
+    if_stmt |
+    while_stmt |
+    for_stmt |
+    foreach_stmt |
+    match_stmt |
+    require_stmt |
+    assert_stmt |
+    emit_stmt |
+    return_stmt |
+    break_stmt |
+    continue_stmt |
+    expr_stmt
+}
+
+let_stmt = { "let" ~ mutability? ~ identifier ~ (":" ~ type_spec)? ~ "=" ~ expression ~ ";" }
+
+assign_stmt = { lvalue ~ assign_op ~ expression ~ ";" }
+assign_op = { "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" }
+
+if_stmt = { "if" ~ expression ~ block ~ ("else" ~ "if" ~ expression ~ block)* ~ ("else" ~ block)? }
+
+while_stmt = { "while" ~ expression ~ block }
+
+for_stmt = { "for" ~ "(" ~ let_stmt ~ expression ~ ";" ~ expression ~ ")" ~ block }
+
+foreach_stmt = { "for" ~ identifier ~ "in" ~ expression ~ block }
+
+match_stmt = {
+    "match" ~ expression ~ "{" ~
+    (match_arm)* ~
+    "}"
+}
+
+match_arm = { pattern ~ "=>" ~ (expression | block) ~ "," }
+
+pattern = {
+    literal_pattern |
+    identifier_pattern |
+    tuple_pattern |
+    struct_pattern |
+    wildcard_pattern
+}
+
+literal_pattern = { literal }
+identifier_pattern = { identifier }
+tuple_pattern = { "(" ~ pattern ~ ("," ~ pattern)* ~ ")" }
+struct_pattern = { identifier ~ "{" ~ (identifier ~ (":" ~ pattern)?)* ~ "}" }
+wildcard_pattern = { "_" }
+
+require_stmt = { "require" ~ "(" ~ expression ~ ("," ~ string_lit)? ~ ")" ~ ";" }
+assert_stmt = { "assert" ~ "(" ~ expression ~ ("," ~ string_lit)? ~ ")" ~ ";" }
+emit_stmt = { "emit" ~ identifier ~ "(" ~ arg_list? ~ ")" ~ ";" }
+return_stmt = { "return" ~ expression? ~ ";" }
+break_stmt = { "break" ~ ";" }
+continue_stmt = { "continue" ~ ";" }
+expr_stmt = { expression ~ ";" }
+
+// ==================== L-values ====================
+lvalue = { 
+    identifier ~ (lvalue_suffix)*
+}
+
+lvalue_suffix = {
+    "[" ~ expression ~ "]" |  // Array/map indexing
+    "." ~ identifier          // Field access
+}
+
+// ==================== Expressions ====================
+expression = { ternary_expr }
+
+ternary_expr = { logical_or ~ ("?" ~ expression ~ ":" ~ ternary_expr)? }
+
+logical_or = { logical_and ~ ("||" ~ logical_and)* }
+logical_and = { bitwise_or ~ ("&&" ~ bitwise_or)* }
+
+bitwise_or = { bitwise_xor ~ ("|" ~ bitwise_xor)* }
+bitwise_xor = { bitwise_and_expr ~ ("^" ~ bitwise_and_expr)* }
+bitwise_and_expr = { equality ~ ("&" ~ equality)* }
+
+equality = { comparison ~ (("==" | "!=") ~ comparison)* }
+comparison = { bitwise_shift ~ (("<" | ">" | "<=" | ">=") ~ bitwise_shift)* }
+bitwise_shift = { additive ~ (("<<" | ">>") ~ additive)* }
+
+additive = { multiplicative ~ (("+" | "-") ~ multiplicative)* }
+multiplicative = { power ~ (("*" | "/" | "%") ~ power)* }
+power = { unary ~ ("**" ~ unary)* }
+
+unary = { 
+    ("!" | "-" | "~" | "++" | "--")* ~ postfix
+}
+
+postfix = {
+    primary ~ (
+        "[" ~ expression ~ "]" |           // Indexing
+        "(" ~ arg_list? ~ ")" |            // Function call
+        "." ~ identifier ~ "(" ~ arg_list? ~ ")" | // Method call
+        "." ~ identifier |                 // Field access
+        "++" | "--"                        // Postfix increment/decrement
+    )*
+}
+
+primary = {
+    literal |
+    lambda_expr |
+    array_literal |
+    tuple_literal |
+    struct_literal |
+    special_identifier |
+    identifier |
+    "(" ~ expression ~ ")"
+}
+
+// ==================== Literals ====================
+literal = {
+    number_lit |
+    float_lit |
+    bool_lit |
+    string_lit |
+    bytes_lit |
+    address_lit
+}
+
+array_literal = { "[" ~ (expression ~ ("," ~ expression)*)? ~ "]" }
+tuple_literal = { "(" ~ expression ~ ("," ~ expression)+ ~ ")" }
+struct_literal = { identifier ~ "{" ~ (field_init ~ ("," ~ field_init)*)? ~ "}" }
+field_init = { identifier ~ ":" ~ expression }
+
+// ==================== Lambda Expressions ====================
+lambda_expr = {
+    "|" ~ param_list? ~ "|" ~ ("->" ~ type_spec)? ~ (expression | block)
+}
+
+// ==================== Special Identifiers ====================
+special_identifier = {
+    "msg_sender" | "msg_value" | "msg_data" |
+    "block_number" | "block_timestamp" | "block_hash" |
+    "tx_origin" | "tx_gasprice" |
+    "this" | "super" | "self"
+}
+
+// ==================== Argument Lists ====================
+arg_list = { expression ~ ("," ~ expression)* }
+
+// ==================== Literals and Identifiers ====================
+identifier = @{ 
+    (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* 
+}
+
+number_lit = @{ 
+    "0x" ~ ASCII_HEX_DIGIT+ |  // Hexadecimal
+    "0b" ~ ("0" | "1")+ |       // Binary
+    "0o" ~ ('0'..'7')+ |        // Octal
+    ASCII_DIGIT+ ~ ("_" ~ ASCII_DIGIT+)* // Decimal with optional separators
+}
+
+float_lit = @{
+    ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+}
+
+bool_lit = { "true" | "false" }
+
+string_lit = @{ 
+    "\"" ~ (
+        "\\\\" | "\\\"" | "\\n" | "\\r" | "\\t" | 
+        (!"\"" ~ !"\\" ~ ANY)
+    )* ~ "\""
+}
+
+bytes_lit = @{ 
+    "b\"" ~ (ASCII_HEX_DIGIT ~ ASCII_HEX_DIGIT)* ~ "\""
+}
+
+address_lit = @{
+    "0x" ~ ASCII_HEX_DIGIT{40}  // Ethereum-style address
+}
+
+// ==================== Reserved Keywords ====================
+KEYWORDS = _{
+    "contract" | "interface" | "struct" | "event" | "modifier" |
+    "public" | "private" | "internal" | "external" |
+    "payable" | "view" | "pure" | "override" | "virtual" |
+    "let" | "mut" | "const" | "fn" | "return" |
+    "if" | "else" | "while" | "for" | "in" | "match" |
+    "break" | "continue" | "require" | "assert" | "emit" |
+    "true" | "false" | "this" | "super" | "self" |
+    "import" | "from" | "type" | "implements" |
+    "Option" | "Result" | "Some" | "None" | "Ok" | "Err"
+}

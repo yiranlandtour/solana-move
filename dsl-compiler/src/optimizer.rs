@@ -1,4 +1,4 @@
-use crate::{Contract, Function, Statement, Expression, BinaryOp, Type};
+use crate::{Contract, Function, Statement, Expression, BinaryOp, LValue};
 use std::collections::HashMap;
 
 pub struct Optimizer {
@@ -67,14 +67,16 @@ impl Optimizer {
             Statement::Assign { target, value } => {
                 let optimized_value = self.optimize_expression(value);
                 
-                // Update constant tracking
-                if self.is_constant(&optimized_value) {
-                    self.constant_values.insert(target.clone(), optimized_value.clone());
-                } else {
-                    self.constant_values.remove(&target);
+                // Update constant tracking if target is a simple identifier
+                if let LValue::Identifier(name) = target {
+                    if self.is_constant(&optimized_value) {
+                        self.constant_values.insert(name.clone(), optimized_value.clone());
+                    } else {
+                        self.constant_values.remove(name);
+                    }
                 }
                 
-                Some(Statement::Assign { target, value: optimized_value })
+                Some(Statement::Assign { target: target.clone(), value: optimized_value })
             }
             
             Statement::If { condition, then_block, else_block } => {

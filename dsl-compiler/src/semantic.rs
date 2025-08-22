@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use anyhow::{Result, anyhow, Context};
-use crate::{Contract, Function, Statement, Expression, Type, StateVariable, Parameter};
+use anyhow::{Result, anyhow};
+use crate::{Contract, Function, Statement, Expression, Type, StateVariable, LValue};
 
 pub struct SemanticAnalyzer {
     // Symbol table for variables and their types
@@ -118,7 +118,7 @@ impl SemanticAnalyzer {
         }
         
         // Check return type consistency
-        if let Some(expected_type) = &func.return_type {
+        if let Some(_expected_type) = &func.return_type {
             // TODO: Verify all return paths return the correct type
         }
         
@@ -128,7 +128,7 @@ impl SemanticAnalyzer {
     
     fn analyze_statement(&mut self, stmt: &Statement) -> Result<()> {
         match stmt {
-            Statement::Let { name, value } => {
+            Statement::Let { name, value, .. } => {
                 let value_type = self.infer_expression_type(value)?;
                 self.add_symbol(name, &value_type, false)?;
                 self.initialized.insert(name.clone());
@@ -136,7 +136,7 @@ impl SemanticAnalyzer {
             
             Statement::Assign { target, value } => {
                 // Check if target exists and is mutable
-                let target_type = self.get_symbol_type(target)?;
+                let target_type = self.check_lvalue(target)?;
                 let value_type = self.infer_expression_type(value)?;
                 
                 if !self.types_compatible(&target_type, &value_type) {
@@ -268,12 +268,18 @@ impl SemanticAnalyzer {
             }
             
             Expression::Call { func, args } => {
-                if let Some(sig) = self.functions.get(func) {
+                // Handle func as an expression that evaluates to a function name
+                let func_name = match func.as_ref() {
+                    Expression::Identifier(name) => name.clone(),
+                    _ => return Err(anyhow!("Complex function expressions not yet supported")),
+                };
+                
+                if let Some(sig) = self.functions.get(&func_name) {
                     // Check argument count
                     if args.len() != sig.params.len() {
                         return Err(anyhow!(
                             "Function {} expects {} arguments, got {}",
-                            func, sig.params.len(), args.len()
+                            func_name, sig.params.len(), args.len()
                         ));
                     }
                     
@@ -283,20 +289,20 @@ impl SemanticAnalyzer {
                         if !self.types_compatible(&arg_type, expected_type) {
                             return Err(anyhow!(
                                 "Type mismatch in function call {}",
-                                func
+                                func_name
                             ));
                         }
                     }
                     
                     sig.return_type.clone()
-                        .ok_or_else(|| anyhow!("Function {} has no return type", func))
+                        .ok_or_else(|| anyhow!("Function {} has no return type", func_name))
                 } else {
-                    Err(anyhow!("Unknown function: {}", func))
+                    Err(anyhow!("Unknown function: {}", func_name))
                 }
             }
             
             Expression::Index { array, index } => {
-                let array_type = self.get_symbol_type(array)?;
+                let array_type = self.infer_expression_type(array)?;
                 let index_type = self.infer_expression_type(index)?;
                 
                 match array_type {
@@ -316,7 +322,7 @@ impl SemanticAnalyzer {
                 }
             }
             
-            Expression::Field { object, field } => {
+            Expression::Field { object, field: _ } => {
                 // For now, just return a placeholder
                 // In full implementation, would check struct fields
                 Ok(Type::U64)
@@ -376,5 +382,21 @@ impl SemanticAnalyzer {
         // Remove symbols from the exiting scope
         self.symbols.retain(|_, info| info.scope_level < self.scope_level);
         self.scope_level -= 1;
+    }
+    
+    fn check_lvalue(&self, lvalue: &LValue) -> Result<Type> {
+        match lvalue {
+            LValue::Identifier(name) => self.get_symbol_type(name),
+            LValue::Index { array, index } => {
+                // Get type of the array identifier
+                let array_type = self.get_symbol_type(array)?;
+                let _ = self.infer_expression_type(index)?;
+                match array_type {
+                    Type::Vec(elem_type) | Type::Array(elem_type, _) => Ok(*elem_type),
+                    Type::Map(_, value_type) => Ok(*value_type),
+                    _ => Err(anyhow!("Cannot index non-collection type"))
+                }
+            },
+        }
     }
 }

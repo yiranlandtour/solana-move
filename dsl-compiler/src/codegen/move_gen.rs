@@ -1,4 +1,4 @@
-use super::super::{Contract, Type, Function, Statement, Expression, Visibility, BinaryOp};
+use super::super::{Contract, Type, Function, Statement, Expression, Visibility, BinaryOp, LValue};
 use anyhow::Result;
 
 pub struct MoveCodeGenerator;
@@ -55,6 +55,8 @@ impl MoveCodeGenerator {
         match func.visibility {
             Visibility::Public => code.push_str("    public "),
             Visibility::Private => code.push_str("    "),
+            Visibility::Internal => code.push_str("    public(friend) "),
+            Visibility::External => code.push_str("    public "),
         }
         
         // entry 修饰符（如果是 public）
@@ -111,28 +113,49 @@ impl MoveCodeGenerator {
     fn type_to_move(&self, ty: &Type) -> String {
         match ty {
             Type::U8 => "u8".to_string(),
+            Type::U16 => "u16".to_string(),
+            Type::U32 => "u32".to_string(),
             Type::U64 => "u64".to_string(),
             Type::U128 => "u128".to_string(),
+            Type::U256 => "u256".to_string(),
+            Type::I8 => "u8".to_string(),  // Move doesn't have signed types
+            Type::I16 => "u16".to_string(),
+            Type::I32 => "u32".to_string(),
+            Type::I64 => "u64".to_string(),
+            Type::I128 => "u128".to_string(),
             Type::Bool => "bool".to_string(),
             Type::Address => "address".to_string(),
             Type::String => "vector<u8>".to_string(),
+            Type::Bytes => "vector<u8>".to_string(),
             Type::Map(k, v) => {
                 // Move 使用 Table 或 SimpleMap
                 format!("aptos_std::simple_map::SimpleMap<{}, {}>", 
                     self.type_to_move(k), self.type_to_move(v))
             },
             Type::Vec(t) => format!("vector<{}>", self.type_to_move(t)),
+            Type::Array(t, _size) => format!("vector<{}>", self.type_to_move(t)),
+            Type::Tuple(types) => {
+                let types_str = types.iter()
+                    .map(|t| self.type_to_move(t))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("({})", types_str)
+            },
+            Type::Struct(name) => name.clone(),
+            Type::Option(t) => format!("Option<{}>", self.type_to_move(t)),
+            Type::Result(ok, err) => format!("Result<{}, {}>", self.type_to_move(ok), self.type_to_move(err)),
         }
     }
 
     fn statement_to_move(&self, stmt: &Statement) -> String {
         match stmt {
-            Statement::Let { name, value } => {
+            Statement::Let { name, value, .. } => {
                 format!("let {} = {};", name, self.expression_to_move(value))
             },
             Statement::Assign { target, value } => {
                 // Move 中赋值需要处理可变引用
-                format!("*{} = {};", target, self.expression_to_move(value))
+                let target_str = self.lvalue_to_move(target);
+                format!("*{} = {};", target_str, self.expression_to_move(value))
             },
             Statement::Require { condition, message } => {
                 if let Some(msg) = message {
@@ -188,11 +211,12 @@ impl MoveCodeGenerator {
                     self.expression_to_move(right))
             },
             Expression::Call { func, args } => {
+                let func_str = self.expression_to_move(func);
                 let args_str = args.iter()
                     .map(|a| self.expression_to_move(a))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("{}({})", func, args_str)
+                format!("{}({})", func_str, args_str)
             },
             _ => "/* expr */".to_string(),
         }
@@ -205,6 +229,7 @@ impl MoveCodeGenerator {
             BinaryOp::Mul => "*",
             BinaryOp::Div => "/",
             BinaryOp::Mod => "%",
+            BinaryOp::Pow => "^",  // Move doesn't have pow operator
             BinaryOp::Eq => "==",
             BinaryOp::Ne => "!=",
             BinaryOp::Lt => "<",
@@ -213,6 +238,21 @@ impl MoveCodeGenerator {
             BinaryOp::Ge => ">=",
             BinaryOp::And => "&&",
             BinaryOp::Or => "||",
+            BinaryOp::BitAnd => "&",
+            BinaryOp::BitOr => "|",
+            BinaryOp::BitXor => "^",
+            BinaryOp::Shl => "<<",
+            BinaryOp::Shr => ">>",
+        }
+    }
+    
+    fn lvalue_to_move(&self, lvalue: &LValue) -> String {
+        match lvalue {
+            LValue::Identifier(name) => name.clone(),
+            LValue::Index { array, index } => {
+                // array is a String (identifier name)
+                format!("{}[{}]", array, self.expression_to_move(index))
+            },
         }
     }
 }

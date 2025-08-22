@@ -1,4 +1,4 @@
-use super::super::{Contract, Type, Function, Statement, Expression, Visibility, BinaryOp};
+use super::super::{Contract, Type, Function, Statement, Expression, BinaryOp, LValue};
 use anyhow::Result;
 use handlebars::Handlebars;
 
@@ -148,24 +148,40 @@ impl SolanaCodeGenerator {
     fn type_to_rust(&self, ty: &Type) -> String {
         match ty {
             Type::U8 => "u8".to_string(),
+            Type::U16 => "u16".to_string(),
+            Type::U32 => "u32".to_string(),
             Type::U64 => "u64".to_string(),
             Type::U128 => "u128".to_string(),
+            Type::U256 => "u256".to_string(),
+            Type::I8 => "i8".to_string(),
+            Type::I16 => "i16".to_string(),
+            Type::I32 => "i32".to_string(),
+            Type::I64 => "i64".to_string(),
+            Type::I128 => "i128".to_string(),
             Type::Bool => "bool".to_string(),
             Type::Address => "Pubkey".to_string(),
             Type::String => "String".to_string(),
+            Type::Bytes => "Vec<u8>".to_string(),
             Type::Map(k, v) => format!("HashMap<{}, {}>", 
                 self.type_to_rust(k), self.type_to_rust(v)),
             Type::Vec(t) => format!("Vec<{}>", self.type_to_rust(t)),
+            Type::Array(t, size) => format!("[{}; {}]", self.type_to_rust(t), size),
+            Type::Tuple(types) => format!("({})", 
+                types.iter().map(|t| self.type_to_rust(t)).collect::<Vec<_>>().join(", ")),
+            Type::Struct(name) => name.clone(),
+            Type::Option(t) => format!("Option<{}>", self.type_to_rust(t)),
+            Type::Result(ok, err) => format!("Result<{}, {}>", 
+                self.type_to_rust(ok), self.type_to_rust(err)),
         }
     }
 
     fn statement_to_rust(&self, stmt: &Statement) -> String {
         match stmt {
-            Statement::Let { name, value } => {
+            Statement::Let { name, value, .. } => {
                 format!("let {} = {};", name, self.expression_to_rust(value))
             },
             Statement::Assign { target, value } => {
-                format!("{} = {};", target, self.expression_to_rust(value))
+                format!("{} = {};", self.lvalue_to_rust(target), self.expression_to_rust(value))
             },
             Statement::Require { condition, message } => {
                 if let Some(msg) = message {
@@ -192,8 +208,10 @@ impl SolanaCodeGenerator {
     fn expression_to_rust(&self, expr: &Expression) -> String {
         match expr {
             Expression::Number(n) => n.to_string(),
+            Expression::Float(f) => f.to_string(),
             Expression::Bool(b) => b.to_string(),
             Expression::String(s) => format!("\"{}\"", s),
+            Expression::Bytes(b) => format!("vec!{:?}", b),
             Expression::Identifier(id) => id.clone(),
             Expression::Binary { op, left, right } => {
                 format!("({} {} {})", 
@@ -201,7 +219,52 @@ impl SolanaCodeGenerator {
                     self.binary_op_to_rust(op),
                     self.expression_to_rust(right))
             },
+            Expression::Unary { op, expr } => {
+                format!("{}({})", 
+                    match op {
+                        crate::UnaryOp::Not => "!",
+                        crate::UnaryOp::Neg => "-",
+                        crate::UnaryOp::BitNot => "~",
+                    },
+                    self.expression_to_rust(expr))
+            },
+            Expression::Call { func, args } => {
+                let func_name = match &**func {
+                    Expression::Identifier(name) => name.clone(),
+                    _ => "unknown".to_string(),
+                };
+                format!("{}({})", func_name, args.iter()
+                    .map(|a| self.expression_to_rust(a))
+                    .collect::<Vec<_>>()
+                    .join(", "))
+            },
+            Expression::Index { array, index } => {
+                format!("{}[{}]", 
+                    self.expression_to_rust(array),
+                    self.expression_to_rust(index))
+            },
+            Expression::Field { object, field } => {
+                format!("{}.{}", self.expression_to_rust(object), field)
+            },
+            Expression::MsgSender => "ctx.accounts.user.key()".to_string(),
+            Expression::MsgValue => "ctx.accounts.user.lamports()".to_string(),
+            Expression::BlockNumber => "Clock::get()?.slot".to_string(),
+            Expression::BlockTimestamp => "Clock::get()?.unix_timestamp".to_string(),
             _ => "/* expr */".to_string(),
+        }
+    }
+
+    fn lvalue_to_rust(&self, lvalue: &LValue) -> String {
+        match lvalue {
+            LValue::Identifier(name) => name.clone(),
+            LValue::Index { array, index } => {
+                format!("{}[{}]", 
+                    self.lvalue_to_rust(array),
+                    self.expression_to_rust(index))
+            },
+            LValue::Field { object, field } => {
+                format!("{}.{}", self.lvalue_to_rust(object), field)
+            },
         }
     }
 
@@ -212,6 +275,7 @@ impl SolanaCodeGenerator {
             BinaryOp::Mul => "*",
             BinaryOp::Div => "/",
             BinaryOp::Mod => "%",
+            BinaryOp::Pow => ".pow",
             BinaryOp::Eq => "==",
             BinaryOp::Ne => "!=",
             BinaryOp::Lt => "<",
@@ -220,6 +284,11 @@ impl SolanaCodeGenerator {
             BinaryOp::Ge => ">=",
             BinaryOp::And => "&&",
             BinaryOp::Or => "||",
+            BinaryOp::BitAnd => "&",
+            BinaryOp::BitOr => "|",
+            BinaryOp::BitXor => "^",
+            BinaryOp::Shl => "<<",
+            BinaryOp::Shr => ">>",
         }
     }
 }

@@ -1,18 +1,16 @@
 use pest::iterators::{Pair, Pairs};
 use pest::Parser;
 use anyhow::{Result, anyhow, Context};
-use crate::{DslParser, Rule, Contract, StateVariable, Function, Visibility, Parameter, Type, Statement, Expression, BinaryOp, UnaryOp};
+use crate::{
+    Rule, Contract, StateVariable, Function, Visibility, Parameter, Type, 
+    Statement, Expression, BinaryOp, LValue
+};
 
-impl Contract {
-    pub fn parse(input: &str) -> Result<Self> {
-        let pairs = DslParser::parse(Rule::program, input)
-            .map_err(|e| anyhow!("Parse error: {}", e))?;
-        
-        let pair = pairs.into_iter().next()
-            .ok_or_else(|| anyhow!("No program found"))?;
-        
-        parse_contract(pair.into_inner().next().unwrap())
-    }
+pub fn parse_contract_from_pairs(mut pairs: Pairs<Rule>) -> Result<Contract> {
+    let pair = pairs.next()
+        .ok_or_else(|| anyhow!("No program found"))?;
+    
+    parse_contract(pair.into_inner().next().unwrap())
 }
 
 fn parse_contract(pair: Pair<Rule>) -> Result<Contract> {
@@ -26,6 +24,10 @@ fn parse_contract(pair: Pair<Rule>) -> Result<Contract> {
     
     let mut state = Vec::new();
     let mut functions = Vec::new();
+    let mut structs = Vec::new();
+    let mut events = Vec::new();
+    let mut modifiers = Vec::new();
+    let mut constants = Vec::new();
     
     for item in inner {
         match item.as_rule() {
@@ -43,7 +45,15 @@ fn parse_contract(pair: Pair<Rule>) -> Result<Contract> {
         }
     }
     
-    Ok(Contract { name, state, functions })
+    Ok(Contract { 
+        name, 
+        state, 
+        structs,
+        functions,
+        events,
+        modifiers,
+        constants,
+    })
 }
 
 fn parse_state_section(pair: Pair<Rule>) -> Result<Vec<StateVariable>> {
@@ -61,7 +71,13 @@ fn parse_state_section(pair: Pair<Rule>) -> Result<Vec<StateVariable>> {
             let ty = parse_type(inner.next()
                 .ok_or_else(|| anyhow!("Missing state variable type"))?)?;
             
-            vars.push(StateVariable { name, ty });
+            vars.push(StateVariable { 
+                name, 
+                ty,
+                visibility: Visibility::Private,
+                is_mutable: true,
+                initial_value: None,
+            });
         }
     }
     
@@ -78,6 +94,9 @@ fn parse_function(pair: Pair<Rule>) -> Result<Function> {
     if current.as_rule() == Rule::visibility {
         visibility = match current.as_str() {
             "public" => Visibility::Public,
+            "private" => Visibility::Private,
+            "internal" => Visibility::Internal,
+            "external" => Visibility::External,
             _ => Visibility::Private,
         };
         current = inner.next().ok_or_else(|| anyhow!("Missing function name"))?;
@@ -122,7 +141,10 @@ fn parse_function(pair: Pair<Rule>) -> Result<Function> {
         name,
         params,
         return_type,
+        modifiers: Vec::new(),
         body,
+        is_payable: false,
+        is_view: false,
     })
 }
 
@@ -141,7 +163,11 @@ fn parse_param_list(pair: Pair<Rule>) -> Result<Vec<Parameter>> {
             let ty = parse_type(inner.next()
                 .ok_or_else(|| anyhow!("Missing parameter type"))?)?;
             
-            params.push(Parameter { name, ty });
+            params.push(Parameter { 
+                name, 
+                ty,
+                is_mutable: false,
+            });
         }
     }
     
@@ -217,13 +243,18 @@ fn parse_let_stmt(pair: Pair<Rule>) -> Result<Statement> {
     let value = parse_expression(inner.next()
         .ok_or_else(|| anyhow!("Missing variable value"))?)?;
     
-    Ok(Statement::Let { name, value })
+    Ok(Statement::Let { 
+        name, 
+        ty: None,
+        value,
+        is_mutable: false,
+    })
 }
 
 fn parse_assign_stmt(pair: Pair<Rule>) -> Result<Statement> {
     let mut inner = pair.into_inner();
     
-    let target = parse_lvalue(inner.next()
+    let target = parse_lvalue_as_lvalue(inner.next()
         .ok_or_else(|| anyhow!("Missing assignment target"))?)?;
     
     let value = parse_expression(inner.next()
@@ -232,20 +263,36 @@ fn parse_assign_stmt(pair: Pair<Rule>) -> Result<Statement> {
     Ok(Statement::Assign { target, value })
 }
 
-fn parse_lvalue(pair: Pair<Rule>) -> Result<String> {
-    // Simplified for now - just return the identifier
-    let mut result = String::new();
+fn parse_lvalue_as_lvalue(pair: Pair<Rule>) -> Result<LValue> {
+    let mut inner = pair.into_inner();
+    let first = inner.next().ok_or_else(|| anyhow!("Empty lvalue"))?;
     
-    for item in pair.into_inner() {
-        if item.as_rule() == Rule::identifier {
-            if !result.is_empty() {
-                result.push('.');
+    if first.as_rule() != Rule::identifier {
+        return Err(anyhow!("Expected identifier in lvalue"));
+    }
+    
+    let mut lvalue = LValue::Identifier(first.as_str().to_string());
+    
+    for item in inner {
+        match item.as_rule() {
+            Rule::identifier => {
+                lvalue = LValue::Field {
+                    object: Box::new(lvalue),
+                    field: item.as_str().to_string(),
+                };
             }
-            result.push_str(item.as_str());
+            Rule::expression => {
+                let index_expr = parse_expression(item)?;
+                lvalue = LValue::Index {
+                    array: Box::new(lvalue),
+                    index: Box::new(index_expr),
+                };
+            }
+            _ => {}
         }
     }
     
-    Ok(result)
+    Ok(lvalue)
 }
 
 fn parse_if_stmt(pair: Pair<Rule>) -> Result<Statement> {
@@ -348,8 +395,9 @@ fn parse_binary_expr(pair: Pair<Rule>) -> Result<Expression> {
 }
 
 fn parse_primary(pair: Pair<Rule>) -> Result<Expression> {
+    let cloned_pair = pair.clone();
     let inner = pair.into_inner().next()
-        .unwrap_or(pair.clone());
+        .unwrap_or(cloned_pair);
     
     match inner.as_rule() {
         Rule::number_lit => {
@@ -365,8 +413,15 @@ fn parse_primary(pair: Pair<Rule>) -> Result<Expression> {
             Ok(Expression::String(parse_string_literal(inner.as_str())))
         }
         Rule::identifier => {
-            // Check if it's a function call or just an identifier
-            Ok(Expression::Identifier(inner.as_str().to_string()))
+            let id = inner.as_str();
+            // Check for special identifiers
+            match id {
+                "msg_sender" => Ok(Expression::MsgSender),
+                "msg_value" => Ok(Expression::MsgValue),
+                "block_number" => Ok(Expression::BlockNumber),
+                "block_timestamp" => Ok(Expression::BlockTimestamp),
+                _ => Ok(Expression::Identifier(id.to_string()))
+            }
         }
         _ => Err(anyhow!("Unknown primary expression"))
     }
